@@ -1,3 +1,6 @@
+#define MQTT_MAX_PACKET_SIZE 1280
+
+
 #include <DHTesp.h>  //https://github.com/beegee-tokyo/DHTesp
 #include <SimpleTimer.h>  //https://github.com/jfturcot/SimpleTimer
 #include <ESP8266WiFi.h>
@@ -5,15 +8,22 @@
 #include <ESP8266mDNS.h> 
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>  //https://github.com/esp8266/Arduino/tree/master/libraries/ArduinoOTA
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <ArduinoJson.h>    //json
 
 //USER CONFIGURED SECTION START//
-const char* ssid = "YOUR_WIRELESS_SSID";
-const char* password = "YOUR_WIRELESS_PASSWORD";
-const char* mqtt_server = "YOUR_MQTT_SERVER_ADDRESS";
+#define DOMOTICZ_SWITCH         20
+
+const char* ssid = "Wifi";
+const char* password = "Pass";
+const char* mqtt_server = "192.168.0.0";
 const int mqtt_port = 1883;
-const char *mqtt_user = "YOUR_MQTT_USERNAME";
-const char *mqtt_pass = "YOUR_MQTT_PASSWORD";
+const char *mqtt_user = "";
+const char *mqtt_pass = "";
 const char *mqtt_client_name = "PCMCU"; // Client connections can't have the same connection name
+
+const char* temp_idx = "19"; // Publish domoticz/in,
 //USER CONFIGURED SECTION END//
 
 WiFiClient espClient;
@@ -31,10 +41,17 @@ const int powerSensePin = 16;  //marked as D0 on the board
 // Variables
 String currentStatus = "OFF";
 String oldStatus = "OFF";
-char temperature[50];
+char* temperature[50];
 char humidity[50];
+char str_temp[50];
 bool boot = true;
 bool connectWifi();
+
+float temp = 0.0;                       // variabele om temperatuur in op te slaan (float is getal met komma)
+char publish_data[100];
+int oneWireBus = 12;                    // 1-wire pin
+OneWire oneWire(oneWireBus);            // 1-wire instantie op de oneWireBus pin
+DallasTemperature sensors(&oneWire);    // geef de instantie van de oneWire bus door aan de DallasTemperature
 
 //Functions
 void setup_wifi() 
@@ -74,6 +91,7 @@ void reconnect()
           boot = false;
         }
         client.subscribe("commands/PC");
+        client.subscribe("domoticz/out");
       } 
       else 
       {
@@ -101,6 +119,38 @@ void callback(char* topic, byte* payload, unsigned int length)
   String newPayload = String((char *)payload);
   Serial.println(newPayload);
   Serial.println();
+
+  if (newTopic == "domoticz/out")
+  {
+      StaticJsonDocument<2000> jsonBuffer;
+      auto error = deserializeJson(jsonBuffer, newPayload);
+      if (error) {
+        Serial.print(F("deserializeJson() failed with code "));
+        Serial.println(error.c_str());
+        return;
+      }
+      if(jsonBuffer["idx"] == DOMOTICZ_SWITCH) {
+        const int pcstatus = jsonBuffer["nvalue"];
+        if (currentStatus == "ON" && pcstatus == 0)
+        {
+          digitalWrite(powerButtonPin, HIGH);
+          delay(1000);
+          digitalWrite(powerButtonPin, LOW);
+          Serial.println("1");                
+        }
+        if (currentStatus == "OFF" && pcstatus == 1)
+        {
+          digitalWrite(powerButtonPin, HIGH);
+          delay(1000);
+          digitalWrite(powerButtonPin, LOW);
+          Serial.println("2");           
+        }
+      Serial.println("ik heb iets gedaan");
+    }
+  }
+
+
+  
   if (newTopic == "commands/PC") 
   {
     if (currentStatus == "ON" && newPayload == "OFF")
@@ -108,18 +158,21 @@ void callback(char* topic, byte* payload, unsigned int length)
       digitalWrite(powerButtonPin, HIGH);
       delay(1000);
       digitalWrite(powerButtonPin, LOW);
+      Serial.println("1");
     }
     if (currentStatus == "OFF" && newPayload == "ON")
     {
       digitalWrite(powerButtonPin, HIGH);
       delay(1000);
       digitalWrite(powerButtonPin, LOW);
+      Serial.println("2");
     }
     if (newPayload == "FORCE OFF")
     {
       digitalWrite(powerButtonPin, HIGH);
       delay(10000);
       digitalWrite(powerButtonPin, LOW);
+      Serial.println("3");
     }
   }
 }
@@ -180,15 +233,14 @@ void checkIn()
 
 void getTemp() 
 {
-  float temp = dht.toFahrenheit(dht.getTemperature());
-  String temp_str = String(temp);
-  temp_str.toCharArray(temperature, temp_str.length() + 1);
-  client.publish("guestRoom/temperature", temperature);  
-  
-  float humid = dht.getHumidity();
-  String temp_str2 = String(humid);
-  temp_str2.toCharArray(humidity, temp_str2.length() + 1);
-  client.publish("guestRoom/humidity", humidity); 
+    sensors.requestTemperatures();          // lees de temperatuur sensor uit
+    temp = sensors.getTempCByIndex(0);      // haal temperatuur in Celcius op van eerste sensor
+    sprintf (publish_data," {\"idx\":%s,\"navalue\":0,\"svalue\":\"%f\"}", temp_idx, temp);  // This is where the Domoticz mqtt magic is happening
+ 
+    client.publish("domoticz/in", publish_data, true);
+    Serial.print("Temperatuur is: ");       // toon bericht op seriële monitor op zelfde regel
+    Serial.println(temp); 
+
 }
 
 
@@ -221,5 +273,3 @@ void loop()
   ArduinoOTA.handle();
   timer.run();
 }
-
-
